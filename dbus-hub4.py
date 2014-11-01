@@ -5,6 +5,11 @@
 # function: subscribes to power measured at meter of the house (in this case measured with a 
 # wireless AC current sensor), and sends that measurement at one second intervals to the multi
 
+# Set Paction to 1 and Iaction to 500 to get a slow working, slightly overshooting, but at least
+# stable, regulation. With a bit more tweeking of P and I it will probably work even better.
+# dbus -y com.victronenergy.vebus.ttyO1 /Hub4/PAction SetValue 1
+# dbus -y com.victronenergy.vebus.ttyO1 /Hub4/IAction SetValue 500
+
 import dbus
 import pprint
 import platform
@@ -33,11 +38,30 @@ objects = {}
 # some emulator.
 # hasVEBus = 'com.victronenergy.vebus.ttyO1' in dbusConn.list_names()
 
+# Called on  1 second interval, takes values from qwacs AC sensor and feeds it to VE.Bus
 def forward():
-	v = dbus.Double(-1 * objects['grid'].get_value(), variant_level=1)
-	objects['target'].set_value(v)
-	logging.debug('writing %s' % v)
+
+	# Get power, and use it to get the direction of the current (exporting or buying)
+	# To get this as the Victron standard (negative = exporting to grid, positive is taking
+	# power from grid), invert the sign. Or just rewire the qwacs sensor :).
+	grid_power = -1 * objects['grid_power'].get_value()
+
+	grid_current = objects['grid_current'].get_value()
+
+	s = -1 if grid_power < 0 else 1
+	grid_text = 'selling' if grid_power < 0 else 'buying'
+	signed_current = dbus.Double(s * grid_current, variant_level=1)
+
+	vebus_current = objects['vebus_current'].get_value()
+	vebus_power = objects['vebus_power'].get_value()
+	vebus_text = 'charging' if vebus_power > 0 else 'discharging'
+
+	objects['target'].set_value(signed_current)
+	print ("Grid: %4.0f W  %5.2f A AC (%s).   Storage: %4.0f W  %5.2f A AC (%s, %.1f VDC)" %
+		(grid_power, grid_current, grid_text,
+		vebus_power, vebus_current, vebus_text, objects['battery_voltage'].get_value()))
 	return True # keep timer running
+
 
 def main():
 	# Argument parsing
@@ -46,7 +70,7 @@ def main():
 	)
 
 	parser.add_argument("-d", "--debug", help="set logging level to debug",
-					action="store_true")
+		action="store_true")
 
 	args = parser.parse_args()
 
@@ -57,11 +81,29 @@ def main():
 	logging.info('Loglevel set to ' + logLevel[logging.getLogger().getEffectiveLevel()])
 
 	# Application starts here
-	objects['grid'] = VeDbusItemImport(
+	objects['grid_current'] = VeDbusItemImport(
+		dbusConn, 'com.victronenergy.pvinverter.qwacs_di2', '/Ac/L1/Current')
+
+	objects['grid_power'] = VeDbusItemImport(
+		dbusConn, 'com.victronenergy.pvinverter.qwacs_di2', '/Ac/L1/Power')
+
+	# We use the current to feed in the pid loop, but since the current is unsigned (why, perhaps fix this
+	# in qwacs to make it conform the rest?) we take power as well, which is signed, and use it sign.
+	objects['grid_power'] = VeDbusItemImport(
 		dbusConn, 'com.victronenergy.pvinverter.qwacs_di2', '/Ac/L1/Power')
 
 	objects['target'] = VeDbusItemImport(
 		dbusConn, 'com.victronenergy.vebus.ttyO1', '/Hub4/ExternalAcCurrentMeasurement')
+
+	# vebus current & power, just for showing data on the commandline
+	objects['vebus_current'] = VeDbusItemImport(
+		dbusConn, 'com.victronenergy.vebus.ttyO1', '/Ac/ActiveIn/L1/I')
+
+	objects['vebus_power'] = VeDbusItemImport(
+		dbusConn, 'com.victronenergy.vebus.ttyO1', '/Ac/ActiveIn/L1/P')
+
+	objects['battery_voltage'] = VeDbusItemImport(
+		dbusConn, 'com.victronenergy.vebus.ttyO1', '/Dc/V')
 
 	gobject.timeout_add(1000, forward)
 
