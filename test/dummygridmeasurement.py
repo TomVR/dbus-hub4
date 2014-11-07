@@ -22,7 +22,7 @@ parser = argparse.ArgumentParser(
 )
 
 parser.add_argument("-n", "--name", help="the D-Bus service you want me to claim",
-                type=str, default="com.victronenergy.pvinverter.qwacs_di2")
+                type=str, default="com.victronenergy.pvinverter.qwacs_di0")
 
 args = parser.parse_args()
 
@@ -37,7 +37,8 @@ pvac_output = DbusDummyService(
     servicename=args.name,
     deviceinstance=2,
     paths={
-        '/Ac/L1/Power': {'initial': 0, 'update': 10}
+        '/Ac/L1/Power': {'initial': -100, 'update': 10},
+        '/Ac/L1/Current': {'initial': -10, 'update': 1}
     })
 
 print 'Connected to dbus, and switching over to gobject.MainLoop() (= event based)'

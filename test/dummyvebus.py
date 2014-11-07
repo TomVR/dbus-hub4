@@ -39,7 +39,13 @@ pvac_output = DbusDummyService(
     servicename=args.name,
     deviceinstance=0,
     paths={
-        '/Hub4/ExternalAcCurrentMeasurement': {'initial': 0}
+        '/Hub4/ExternalAcCurrentMeasurement': {'initial': 0},
+        '/Hub4/ExternalAcCurrentSetpoint': {'initial': 0},
+        '/Hub4/IAction': {'initial': 0},
+        '/Hub4/PAction': {'initial': 0},
+        '/Ac/ActiveIn/L1/I': {'initial': 2},
+        '/Ac/ActiveIn/L1/P': {'initial': 440},
+        '/Dc/V': {'initial': 50.2}
     })
 
 print 'Connected to dbus, and switching over to gobject.MainLoop() (= event based)'

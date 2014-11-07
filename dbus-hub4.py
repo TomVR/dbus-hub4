@@ -44,7 +44,7 @@ def forward():
 	# Get power, and use it to get the direction of the current (exporting or buying)
 	# To get this as the Victron standard (negative = exporting to grid, positive is taking
 	# power from grid), invert the sign. Or just rewire the qwacs sensor :).
-	grid_power = -1 * objects['grid_power'].get_value()
+	grid_power = 1 * objects['grid_power'].get_value()
 
 	grid_current = objects['grid_current'].get_value()
 
@@ -56,10 +56,16 @@ def forward():
 	vebus_power = objects['vebus_power'].get_value()
 	vebus_text = 'charging' if vebus_power > 0 else 'discharging'
 
-	objects['target'].set_value(signed_current)
-	print ("Grid: %4.0f W  %5.2f A AC (%s).   Storage: %4.0f W  %5.2f A AC (%s, %.1f VDC)" %
-		(grid_power, grid_current, grid_text,
-		vebus_power, vebus_current, vebus_text, objects['battery_voltage'].get_value()))
+	try:
+		print ("Grid: %4.0f W  %5.2f A AC (%s).   Storage: %4.0f W  %5.2f A AC (%s, %.1f VDC)" %
+			(grid_power, grid_current, grid_text,
+			vebus_power, vebus_current, vebus_text, objects['battery_voltage'].get_value()))
+		objects['target'].set_value(signed_current)
+	except:
+		import traceback
+		traceback.print_exc()
+		sys.exit()
+
 	return True # keep timer running
 
 
@@ -68,10 +74,12 @@ def main():
 	parser = argparse.ArgumentParser(
 		description='dbus-hub4 v%s: communication to VRM Portal database' % softwareversion
 	)
-
-	parser.add_argument("-d", "--debug", help="set logging level to debug",
-		action="store_true")
-
+	parser.add_argument(
+		"-d", "--debug", help="set logging level to debug",	action="store_true")
+	parser.add_argument(
+		"-p", "--paction", help="PID loop p-action, default=1", type=int, default="1")
+	parser.add_argument(
+		"-i", "--iaction", help="PID loop i-action, default=500", type=int, default="500")
 	args = parser.parse_args()
 
 	# Init logging
@@ -80,31 +88,39 @@ def main():
 	logLevel = {0: 'NOTSET', 10: 'DEBUG', 20: 'INFO', 30: 'WARNING', 40: 'ERROR'}
 	logging.info('Loglevel set to ' + logLevel[logging.getLogger().getEffectiveLevel()])
 
-	# Application starts here
+	# ========= Application starts here ===========
+
+	# Connect to the grid measurement.
+	acindbusname = 'com.victronenergy.pvinverter.qwacs_di0'
 	objects['grid_current'] = VeDbusItemImport(
-		dbusConn, 'com.victronenergy.pvinverter.qwacs_di2', '/Ac/L1/Current')
-
-	objects['grid_power'] = VeDbusItemImport(
-		dbusConn, 'com.victronenergy.pvinverter.qwacs_di2', '/Ac/L1/Power')
-
+		dbusConn, acindbusname, '/Ac/L1/Current')
 	# We use the current to feed in the pid loop, but since the current is unsigned (why, perhaps fix this
-	# in qwacs to make it conform the rest?) we take power as well, which is signed, and use it sign.
+	# in qwacs to make it conform the rest?) we take power as well, which is signed, and use its sign.
 	objects['grid_power'] = VeDbusItemImport(
-		dbusConn, 'com.victronenergy.pvinverter.qwacs_di2', '/Ac/L1/Power')
+		dbusConn, acindbusname, '/Ac/L1/Power')
 
+	# Connect to the multi inverter/charger
+	# target is the parameter to which we´ll write the measurement at the grid.
 	objects['target'] = VeDbusItemImport(
 		dbusConn, 'com.victronenergy.vebus.ttyO1', '/Hub4/ExternalAcCurrentMeasurement')
 
-	# vebus current & power, just for showing data on the commandline
+	# Set default IAction and PAction
+	# To play around, it is possible to send other values while this script is running. Just
+	# don't forget that they'll be reset once this script restarts.
+	VeDbusItemImport(dbusConn, 'com.victronenergy.vebus.ttyO1', '/Hub4/PAction').set_value(
+		dbus.Int32(args.paction, variant_level=1))
+	VeDbusItemImport(dbusConn, 'com.victronenergy.vebus.ttyO1', '/Hub4/IAction').set_value(
+		dbus.Int32(args.iaction, variant_level=1))
+
+	# Connect to vebus current & power, just for showing data on the commandline
 	objects['vebus_current'] = VeDbusItemImport(
 		dbusConn, 'com.victronenergy.vebus.ttyO1', '/Ac/ActiveIn/L1/I')
-
 	objects['vebus_power'] = VeDbusItemImport(
 		dbusConn, 'com.victronenergy.vebus.ttyO1', '/Ac/ActiveIn/L1/P')
-
 	objects['battery_voltage'] = VeDbusItemImport(
 		dbusConn, 'com.victronenergy.vebus.ttyO1', '/Dc/V')
 
+	# Initiate timer on fixed interval
 	gobject.timeout_add(1000, forward)
 
 	print 'Connected to dbus, and switching over to gobject.MainLoop() (= event based)'
