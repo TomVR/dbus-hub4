@@ -25,18 +25,15 @@ softwareversion = '0.0'
 # our own packages
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), './ext/velib_python'))
 from vedbus import VeDbusItemImport
+from dbusmonitor import DbusMonitor
 
 DBusGMainLoop(set_as_default=True)
 
 # Connect to the sessionbus. Note that on ccgx we use systembus instead.
 dbusConn = dbus.SystemBus() if (platform.machine() == 'armv7l') else dbus.SessionBus()
 
-# dictionary containing the different items
-objects = {}
-
-# check if the vbus.ttyO1 exists (it normally does on a ccgx, and for linux a pc, there is
-# some emulator.
-# hasVEBus = 'com.victronenergy.vebus.ttyO1' in dbusConn.list_names()
+dbusmonitor = None
+target = None
 
 # Called on  1 second interval, takes values from qwacs AC sensor and feeds it to VE.Bus
 def forward():
@@ -44,27 +41,31 @@ def forward():
 	# Get power, and use it to get the direction of the current (exporting or buying)
 	# To get this as the Victron standard (negative = exporting to grid, positive is taking
 	# power from grid), invert the sign. Or just rewire the qwacs sensor :).
-	grid_power = 1 * objects['grid_power'].get_value()
+	grid_power = dbusmonitor.get_value('com.victronenergy.pvinverter.qwacs_di0', '/Ac/L1/Power')
+	grid_current = dbusmonitor.get_value('com.victronenergy.pvinverter.qwacs_di0', '/Ac/L1/Current')
 
-	grid_current = objects['grid_current'].get_value()
+	if grid_power is None or grid_current is None:
+		logging.error("No grid measurement? grid_power=%s, grid_current=%s" % (grid_power, grid_current))
+		logging.error("Exiting...")
+		sys.exit(1)
 
 	s = -1 if grid_power < 0 else 1
-	grid_text = 'selling' if grid_power < 0 else 'buying'
+	grid_text = 'selling' if grid_power < 0 else 'buying '
 	signed_current = dbus.Double(s * grid_current, variant_level=1)
 
-	vebus_current = objects['vebus_current'].get_value()
-	vebus_power = objects['vebus_power'].get_value()
+	vebus_current = dbusmonitor.get_value('com.victronenergy.vebus.ttyO1', '/Ac/ActiveIn/L1/I')
+	vebus_power = dbusmonitor.get_value('com.victronenergy.vebus.ttyO1', '/Ac/ActiveIn/L1/P')
 	vebus_text = 'charging' if vebus_power > 0 else 'discharging'
+	vebus_bat_voltage = dbusmonitor.get_value('com.victronenergy.vebus.ttyO1', '/Dc/V')
 
 	try:
-		print ("Grid: %4.0f W  %5.2f A AC (%s).   Storage: %4.0f W  %5.2f A AC (%s, %.1f VDC)" %
-			(grid_power, grid_current, grid_text,
-			vebus_power, vebus_current, vebus_text, objects['battery_voltage'].get_value()))
-		objects['target'].set_value(signed_current)
+		logging.debug("Grid: %4.0f W  %5.2f A AC (%s).   Storage: %4.0f W  %5.2f A AC (%.1f VDC, %s)" %
+			(grid_power, grid_current, grid_text, vebus_power, vebus_current, vebus_bat_voltage, vebus_text))
+		target.set_value(signed_current)
 	except:
 		import traceback
 		traceback.print_exc()
-		sys.exit()
+		sys.exit(1)
 
 	return True # keep timer running
 
@@ -91,17 +92,23 @@ def main():
 	# ========= Application starts here ===========
 
 	# Connect to the grid measurement.
-	acindbusname = 'com.victronenergy.pvinverter.qwacs_di0'
-	objects['grid_current'] = VeDbusItemImport(
-		dbusConn, acindbusname, '/Ac/L1/Current')
-	# We use the current to feed in the pid loop, but since the current is unsigned (why, perhaps fix this
-	# in qwacs to make it conform the rest?) we take power as well, which is signed, and use its sign.
-	objects['grid_power'] = VeDbusItemImport(
-		dbusConn, acindbusname, '/Ac/L1/Power')
+	dummy = {'code': None, 'whenToLog': 'configChange', 'accessLevel': None}
+	global dbusmonitor
+	dbusmonitor = DbusMonitor({
+		'com.victronenergy.pvinverter': {
+			'/Ac/L1/Current': dummy,
+			'/Ac/L1/Power': dummy},  # since current is unsigned, use power to get the sign
+		'com.victronenergy.vebus': {
+			'/Ac/ActiveIn/L1/I': dummy,
+			'/Ac/ActiveIn/L1/P': dummy,
+			'/Dc/V': dummy,
+			'/Dc/I': dummy}
+	})
 
 	# Connect to the multi inverter/charger
 	# target is the parameter to which we´ll write the measurement at the grid.
-	objects['target'] = VeDbusItemImport(
+	global target
+	target = VeDbusItemImport(
 		dbusConn, 'com.victronenergy.vebus.ttyO1', '/Hub4/ExternalAcCurrentMeasurement')
 
 	# Set default IAction and PAction
@@ -111,14 +118,6 @@ def main():
 		dbus.Int32(args.paction, variant_level=1))
 	VeDbusItemImport(dbusConn, 'com.victronenergy.vebus.ttyO1', '/Hub4/IAction').set_value(
 		dbus.Int32(args.iaction, variant_level=1))
-
-	# Connect to vebus current & power, just for showing data on the commandline
-	objects['vebus_current'] = VeDbusItemImport(
-		dbusConn, 'com.victronenergy.vebus.ttyO1', '/Ac/ActiveIn/L1/I')
-	objects['vebus_power'] = VeDbusItemImport(
-		dbusConn, 'com.victronenergy.vebus.ttyO1', '/Ac/ActiveIn/L1/P')
-	objects['battery_voltage'] = VeDbusItemImport(
-		dbusConn, 'com.victronenergy.vebus.ttyO1', '/Dc/V')
 
 	# Initiate timer on fixed interval
 	gobject.timeout_add(1000, forward)
